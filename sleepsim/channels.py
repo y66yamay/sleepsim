@@ -216,9 +216,10 @@ class PSGChannelGenerator:
             # Saccade-like movements
             n_saccades = self.rng.poisson(5)
             for _ in range(n_saccades):
-                pos = self.rng.integers(0, max(1, n - int(0.2 * self.fs)))
+                upper = max(1, n - int(0.2 * self.fs))
+                pos = self.rng.integers(0, upper)
                 dur = int(self.rng.uniform(0.05, 0.2) * self.fs)
-                dur = min(dur, n - pos)
+                dur = min(dur, max(0, n - pos))
                 amplitude = self.rng.uniform(0.5, 2.0) * self.rng.choice([-1, 1])
                 base_l[pos:pos + dur] += amplitude
                 base_r[pos:pos + dur] -= amplitude  # conjugate
@@ -447,7 +448,9 @@ class PSGChannelGenerator:
                 apnea_dur = int(apnea_dur_sec * self.fs)
                 apnea_dur = min(apnea_dur, n // 2)
 
-                pos = self.rng.integers(0, max(1, n - apnea_dur - int(5 * self.fs)))
+                margin = apnea_dur + int(5 * self.fs)
+                upper = max(1, n - margin) if n > margin else 1
+                pos = self.rng.integers(0, upper)
 
                 # Respiratory cessation/reduction
                 resp[pos:pos + apnea_dur] *= 0.1  # near-zero effort during apnea

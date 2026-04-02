@@ -196,7 +196,15 @@ class SleepStageSequence:
         waso_boost = mods.get("waso_boost", 1.0)
         if waso_boost > 1.0:
             for s in [N1, N2, N3, REM]:
-                T[s, W] *= waso_boost
+                # Scale up wake transition while proportionally reducing others
+                old_wake = T[s, W]
+                new_wake = min(old_wake * waso_boost, 0.6)
+                if old_wake < new_wake:
+                    scale = (1.0 - new_wake) / max(1.0 - old_wake, 1e-10)
+                    for t_stage in range(N_STAGES):
+                        if t_stage != W:
+                            T[s, t_stage] *= scale
+                    T[s, W] = new_wake
             # N3 suppression
             n3_supp = mods.get("n3_suppression", 1.0)
             T[N2, N3] *= n3_supp
@@ -207,9 +215,17 @@ class SleepStageSequence:
             current_hour = epoch_idx * self.epoch_sec / 3600.0
             if current_hour > em_hour:
                 hours_past = current_hour - em_hour
-                wake_surge = min(0.5, 0.15 * hours_past)
+                wake_surge = min(0.4, 0.12 * hours_past)
                 for s in [N1, N2, REM]:
-                    T[s, W] += wake_surge
+                    # Proportionally increase wake at the expense of other transitions
+                    old_wake = T[s, W]
+                    new_wake = min(old_wake + wake_surge, 0.7)
+                    if old_wake < new_wake:
+                        scale = (1.0 - new_wake) / max(1.0 - old_wake, 1e-10)
+                        for t_stage in range(N_STAGES):
+                            if t_stage != W:
+                                T[s, t_stage] *= scale
+                        T[s, W] = new_wake
 
         # --- Forbidden transitions ---
         T[W, N3] = 0.0   # No direct Wake -> N3
@@ -228,20 +244,30 @@ class SleepStageSequence:
         """Clean up the generated stage sequence.
 
         - Merge isolated single-epoch stages into neighbors.
+        - Merge isolated 2-epoch segments surrounded by the same stage.
         - Ensure no physiologically impossible sequences remain.
         """
         stages = stages.copy()
         n = len(stages)
 
-        # Remove isolated single-epoch stages (except Wake, which can be brief)
+        # Pass 1: Remove isolated single-epoch stages (except Wake)
         for i in range(1, n - 1):
             if stages[i] == W:
                 continue
             prev_same = (stages[i - 1] == stages[i])
             next_same = (stages[i + 1] == stages[i])
             if not prev_same and not next_same:
-                # Merge into the previous stage
                 stages[i] = stages[i - 1]
+
+        # Pass 2: Merge isolated 2-epoch segments surrounded by the same stage
+        for i in range(1, n - 2):
+            if stages[i] == W:
+                continue
+            if (stages[i] == stages[i + 1] and
+                    stages[i] != stages[i - 1] and
+                    i + 2 < n and stages[i + 2] == stages[i - 1]):
+                stages[i] = stages[i - 1]
+                stages[i + 1] = stages[i - 1]
 
         return stages
 

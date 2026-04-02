@@ -179,54 +179,75 @@ def get_fc_modifiers(condition: str, n_roi: int = 20) -> Optional[np.ndarray]:
 
     P = np.zeros((n_roi, n_roi))
 
+    # Compute ROI group boundaries proportional to n_roi
+    # Groups: Frontal, Central/Parietal, Temporal, Occipital, Subcortical
+    group_size = n_roi // 5
+    remainder = n_roi % 5
+    boundaries = []
+    start = 0
+    for g in range(5):
+        end = start + group_size + (1 if g < remainder else 0)
+        boundaries.append((start, end))
+        start = end
+    frontal = range(boundaries[0][0], boundaries[0][1])
+    central = range(boundaries[1][0], boundaries[1][1])
+    temporal = range(boundaries[2][0], boundaries[2][1])
+    occipital = range(boundaries[3][0], boundaries[3][1])
+    subcortical = range(boundaries[4][0], boundaries[4][1])
+    cortical = range(0, boundaries[4][0])
+
+    # Insular ROIs: second half of temporal group
+    temporal_list = list(temporal)
+    insular = temporal_list[len(temporal_list) // 2:]
+
     if condition == "rbd":
         # RBD: reduced brainstem-cortical connectivity,
         # reduced basal ganglia (subcortical) connectivity
-        # ROIs 16-19 are subcortical/brainstem
-        for i in range(16, min(20, n_roi)):
-            for j in range(16):  # cortical ROIs
+        for i in subcortical:
+            for j in cortical:
                 P[i, j] = -0.15
                 P[j, i] = -0.15
         # Reduced connectivity within subcortical network
-        for i in range(16, min(20, n_roi)):
-            for j in range(i + 1, min(20, n_roi)):
+        sub_list = list(subcortical)
+        for ii, i in enumerate(sub_list):
+            for j in sub_list[ii + 1:]:
                 P[i, j] = -0.10
                 P[j, i] = -0.10
 
     elif condition == "osa":
         # OSA: reduced default mode network connectivity (frontal-parietal)
-        # Frontal: 0-3, Parietal: 4-7
-        for i in range(4):
-            for j in range(4, 8):
+        for i in frontal:
+            for j in central:
                 P[i, j] = -0.12
                 P[j, i] = -0.12
-        # Reduced insular connectivity (ROIs 10-11)
-        for i in [10, 11]:
+        # Reduced insular connectivity
+        for i in insular:
             for j in range(n_roi):
                 if j != i:
                     P[i, j] -= 0.08
                     P[j, i] -= 0.08
         # Increased subcortical-frontal (compensatory)
-        for i in range(16, min(20, n_roi)):
-            for j in range(4):
+        for i in subcortical:
+            for j in frontal:
                 P[i, j] = 0.08
                 P[j, i] = 0.08
 
     elif condition == "insomnia":
         # Insomnia: hyperconnectivity in arousal networks
         # Increased frontal connectivity (hyperarousal)
-        for i in range(4):
-            for j in range(i + 1, 4):
+        frontal_list = list(frontal)
+        for ii, i in enumerate(frontal_list):
+            for j in frontal_list[ii + 1:]:
                 P[i, j] = 0.12
                 P[j, i] = 0.12
         # Increased frontal-subcortical (salience network overactivity)
-        for i in range(4):
-            for j in range(16, min(20, n_roi)):
+        for i in frontal:
+            for j in subcortical:
                 P[i, j] = 0.10
                 P[j, i] = 0.10
         # Reduced occipital-frontal (disrupted DMN)
-        for i in range(12, 16):
-            for j in range(4):
+        for i in occipital:
+            for j in frontal:
                 P[i, j] = -0.08
                 P[j, i] = -0.08
 
