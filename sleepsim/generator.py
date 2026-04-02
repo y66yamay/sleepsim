@@ -5,6 +5,7 @@ PSG signal synthesis, and FC matrix embedding into a single pipeline.
 """
 
 from typing import Dict, Iterator, List, Optional
+import warnings
 
 import numpy as np
 
@@ -67,8 +68,9 @@ class SleepDataGenerator:
             dict with keys: 'traits', 'fc_matrix', 'hypnogram', 'psg_data',
             'channel_names', 'sampling_rate'.
         """
-        rng_stage = np.random.default_rng(self.seed + traits.subject_id * 2)
-        rng_signal = np.random.default_rng(self.seed + traits.subject_id * 2 + 1)
+        # Use SeedSequence to avoid collisions with large subject IDs
+        ss = np.random.SeedSequence([self.seed, traits.subject_id])
+        rng_stage, rng_signal = [np.random.default_rng(s) for s in ss.spawn(2)]
 
         # Generate hypnogram
         stage_gen = SleepStageSequence(
@@ -127,6 +129,16 @@ class SleepDataGenerator:
             - 'sampling_rate': int
             - 'metadata': dict
         """
+        # Warn about memory usage for large datasets
+        samples_per_subject = int(self.duration_hours * 3600 * self.sampling_rate
+                                  / self.downsample_factor)
+        est_bytes = self.n_subjects * N_CHANNELS * samples_per_subject * 4  # float32
+        est_gb = est_bytes / (1024 ** 3)
+        if est_gb > 1.0:
+            warnings.warn(
+                f"generate_dataset() will load ~{est_gb:.1f} GB of PSG data into "
+                f"memory. Consider using generate_subject_iter() for large datasets.")
+
         fc_matrices = self.fc_gen.generate_batch(self.subjects)
         hypnograms = []
         psg_list = []
@@ -178,8 +190,8 @@ class SleepDataGenerator:
 
         for si, subj_idx in enumerate(subject_indices):
             traits = self.subjects[subj_idx]
-            rng_stage = np.random.default_rng(self.seed + traits.subject_id * 2)
-            rng_signal = np.random.default_rng(self.seed + traits.subject_id * 2 + 1)
+            ss = np.random.SeedSequence([self.seed, traits.subject_id])
+            rng_stage, rng_signal = [np.random.default_rng(s) for s in ss.spawn(2)]
 
             # Full hypnogram (needed for stage lookup)
             stage_gen = SleepStageSequence(

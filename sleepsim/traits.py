@@ -152,11 +152,12 @@ def generate_subjects(n: int, condition: str = "healthy",
             if trait_name in trait_idx:
                 ti = trait_idx[trait_name]
                 raw_values[:, ti] = raw_values[:, ti] * scale + shift
-                # Clamp to valid ranges (with small margin to prevent edge effects)
+                # Clamp to valid ranges (with small margin for condition shifts)
+                trait_range = TRAIT_MAXS[ti] - TRAIT_MINS[ti]
                 raw_values[:, ti] = np.clip(
                     raw_values[:, ti],
-                    TRAIT_MINS[ti] * 0.5,   # allow going slightly below normal min
-                    TRAIT_MAXS[ti] * 1.5,   # allow going slightly above normal max
+                    TRAIT_MINS[ti] - 0.2 * trait_range,
+                    TRAIT_MAXS[ti] + 0.2 * trait_range,
                 )
 
     subjects = []

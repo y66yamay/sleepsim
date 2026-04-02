@@ -37,33 +37,43 @@ def _build_roi_weight_matrix(n_roi: int = DEFAULT_N_ROI) -> np.ndarray:
     idx = {name: i for i, name in enumerate(TRAIT_NAMES)}
     W = np.zeros((n_roi, N_TRAITS))
 
-    # Frontal ROIs (0-3): delta_power, spindle_density, sleep_efficiency
-    for roi in range(4):
+    # Compute ROI group boundaries proportional to n_roi
+    group_size = n_roi // 5
+    remainder = n_roi % 5
+    boundaries = []
+    start = 0
+    for g in range(5):
+        end = start + group_size + (1 if g < remainder else 0)
+        boundaries.append((start, end))
+        start = end
+
+    # Frontal ROIs: delta_power, spindle_density, sleep_efficiency
+    for roi in range(boundaries[0][0], boundaries[0][1]):
         W[roi, idx["delta_power"]] = 0.8
         W[roi, idx["spindle_density"]] = 0.6
         W[roi, idx["sleep_efficiency"]] = 0.5
         W[roi, idx["n3_fraction"]] = 0.4
 
-    # Central/Parietal ROIs (4-7): spindle_frequency, alpha_power, spindle_density
-    for roi in range(4, 8):
+    # Central/Parietal ROIs: spindle_frequency, alpha_power, spindle_density
+    for roi in range(boundaries[1][0], boundaries[1][1]):
         W[roi, idx["spindle_frequency"]] = 0.7
         W[roi, idx["alpha_power"]] = 0.6
         W[roi, idx["spindle_density"]] = 0.5
         W[roi, idx["delta_power"]] = 0.3
 
-    # Temporal ROIs (8-11): alpha_power, spindle_density
-    for roi in range(8, 12):
+    # Temporal ROIs: alpha_power, spindle_density
+    for roi in range(boundaries[2][0], boundaries[2][1]):
         W[roi, idx["alpha_power"]] = 0.8
         W[roi, idx["spindle_density"]] = 0.5
         W[roi, idx["spindle_frequency"]] = 0.3
 
-    # Occipital ROIs (12-15): alpha_power dominant
-    for roi in range(12, 16):
+    # Occipital ROIs: alpha_power dominant
+    for roi in range(boundaries[3][0], boundaries[3][1]):
         W[roi, idx["alpha_power"]] = 1.0
         W[roi, idx["delta_power"]] = 0.2
 
-    # Subcortical/Brainstem ROIs (16-19): REM/autonomic traits
-    for roi in range(16, min(20, n_roi)):
+    # Subcortical/Brainstem ROIs: REM/autonomic traits
+    for roi in range(boundaries[4][0], boundaries[4][1]):
         W[roi, idx["rem_latency"]] = 0.6
         W[roi, idx["rem_density"]] = 0.7
         W[roi, idx["muscle_atonia_depth"]] = 0.5
