@@ -281,8 +281,6 @@ def _require_pyedflib():
 # Physical value ranges per channel (used for EDF digital->physical scaling)
 # Values are approximate and chosen to cover the synthetic signal range.
 _EDF_PHYS_RANGES = {
-    "EEG_C3":      ("uV",      -200.0, 200.0),
-    "EEG_C4":      ("uV",      -200.0, 200.0),
     "EOG_L":       ("uV",      -300.0, 300.0),
     "EOG_R":       ("uV",      -300.0, 300.0),
     "EMG_chin":    ("uV",      -150.0, 150.0),
@@ -290,6 +288,18 @@ _EDF_PHYS_RANGES = {
     "Resp_effort": ("a.u.",    -3.0,   3.0),
     "SpO2":        ("%",       0.0,    100.0),
 }
+
+# Default range for any EEG_* channel
+_EDF_EEG_RANGE = ("uV", -200.0, 200.0)
+
+
+def _get_edf_range(channel_name: str):
+    """Return (unit, phys_min, phys_max) for a channel name."""
+    if channel_name in _EDF_PHYS_RANGES:
+        return _EDF_PHYS_RANGES[channel_name]
+    if channel_name.startswith("EEG_"):
+        return _EDF_EEG_RANGE
+    return ("a.u.", -1.0, 1.0)
 
 
 def save_subject_edf(subject_data: Dict, path: Union[str, Path]) -> None:
@@ -319,7 +329,7 @@ def save_subject_edf(subject_data: Dict, path: Union[str, Path]) -> None:
     signal_headers = []
     scaled_data = []
     for i, name in enumerate(ch_names):
-        unit, pmin, pmax = _EDF_PHYS_RANGES.get(name, ("a.u.", -1.0, 1.0))
+        unit, pmin, pmax = _get_edf_range(name)
         # SpO2 signals are stored as fraction (0-1); rescale to percent
         data = psg[i].astype(np.float64)
         if name == "SpO2":
