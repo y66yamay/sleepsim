@@ -6,6 +6,7 @@ PSG signal synthesis, and FC matrix embedding into a single pipeline.
 
 from typing import Dict, Iterator, List, Optional
 import warnings
+from pathlib import Path
 
 import numpy as np
 
@@ -164,6 +165,52 @@ class SleepDataGenerator:
                 "condition": self.condition,
             },
         }
+
+    def save_to_disk(self, output_dir, fmt: str = "npz",
+                     compress: bool = True) -> Dict:
+        """Generate and save the full dataset to disk.
+
+        Writes a directory structure containing:
+            output_dir/
+            ├── metadata.json
+            ├── traits.csv
+            └── subjects/
+                ├── subject_0000.npz (or .edf)
+                ├── subject_0000_hypnogram.csv
+                └── ...
+
+        Uses memory-efficient iteration: only one subject is held in memory
+        at a time.
+
+        Args:
+            output_dir: Directory path to write files into.
+            fmt: Per-subject PSG format ("npz" or "edf").
+                 EDF requires `pyedflib` (pip install pyedflib).
+            compress: Use compressed NPZ (ignored for EDF).
+
+        Returns:
+            Dict with summary info ({"n_subjects_saved", "output_dir"}).
+        """
+        from .io import save_dataset
+
+        meta = {
+            "n_subjects": self.n_subjects,
+            "sampling_rate": self.sampling_rate // self.downsample_factor,
+            "duration_hours": self.duration_hours,
+            "epoch_sec": self.epoch_sec,
+            "n_roi": self.n_roi,
+            "seed": self.seed,
+            "downsample_factor": self.downsample_factor,
+            "condition": self.condition,
+        }
+        return save_dataset(
+            self.generate_subject_iter(),
+            output_dir=output_dir,
+            metadata=meta,
+            fmt=fmt,
+            epoch_sec=self.epoch_sec,
+            compress=compress,
+        )
 
     def generate_epoch_batch(self, subject_indices: List[int],
                              epoch_indices: List[int]) -> Dict:
