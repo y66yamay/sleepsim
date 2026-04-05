@@ -6,12 +6,17 @@ PSG signal synthesis, and FC matrix embedding into a single pipeline.
 
 from typing import Dict, Iterator, List, Optional
 import warnings
+from pathlib import Path
 
 import numpy as np
 
 from .traits import SubjectTraits, generate_subjects
 from .stages import SleepStageSequence, STAGE_NAMES
-from .channels import PSGChannelGenerator, CHANNEL_NAMES, N_CHANNELS
+from .channels import (
+    PSGChannelGenerator, CHANNEL_NAMES, N_CHANNELS,
+    DEFAULT_EEG_CHANNELS, NON_EEG_CHANNELS,
+    validate_eeg_channels, build_channel_names,
+)
 from .fc_matrix import FCMatrixGenerator
 from .conditions import validate_condition, VALID_CONDITIONS
 
@@ -33,7 +38,8 @@ class SleepDataGenerator:
                  duration_hours: float = 8.0, epoch_sec: float = 30.0,
                  n_roi: int = 20, seed: int = 42,
                  downsample_factor: int = 1,
-                 condition: str = "healthy"):
+                 condition: str = "healthy",
+                 eeg_channels: Optional[List[str]] = None):
         """
         Args:
             n_subjects: Number of virtual subjects to generate.
@@ -44,6 +50,11 @@ class SleepDataGenerator:
             seed: Master random seed for reproducibility.
             downsample_factor: Factor to downsample PSG signals (e.g., 4 -> fs/4).
             condition: Clinical condition ("healthy", "rbd", "osa", "insomnia").
+            eeg_channels: List of EEG channel names from the 10-20 system
+                (e.g., ["C3", "C4"] or ["F3", "F4", "C3", "C4", "O1", "O2"]).
+                Defaults to ["C3", "C4"]. Non-EEG channels (EOG, EMG, ECG,
+                Resp, SpO2) are always included. See ``EEG_TOPOGRAPHY`` in
+                ``sleepsim.channels`` for available channel names.
         """
         self.condition = validate_condition(condition)
         self.n_subjects = n_subjects
@@ -54,6 +65,11 @@ class SleepDataGenerator:
         self.seed = seed
         self.downsample_factor = downsample_factor
         self.n_epochs = int(duration_hours * 3600 / epoch_sec)
+        if eeg_channels is None:
+            eeg_channels = list(DEFAULT_EEG_CHANNELS)
+        self.eeg_channels = validate_eeg_channels(eeg_channels)
+        self.channel_names = build_channel_names(self.eeg_channels)
+        self.n_channels = len(self.channel_names)
 
         # Pre-generate subjects and FC matrices (lightweight)
         self.rng = np.random.default_rng(seed)
@@ -85,7 +101,8 @@ class SleepDataGenerator:
         # Generate PSG signals
         channel_gen = PSGChannelGenerator(
             traits, sampling_rate=self.sampling_rate,
-            epoch_sec=self.epoch_sec, rng=rng_signal
+            epoch_sec=self.epoch_sec, rng=rng_signal,
+            eeg_channels=self.eeg_channels,
         )
         psg_data = channel_gen.generate_all(hypnogram)
 
@@ -100,7 +117,7 @@ class SleepDataGenerator:
             "fc_matrix": fc_matrix,
             "hypnogram": hypnogram,
             "psg_data": psg_data,
-            "channel_names": CHANNEL_NAMES,
+            "channel_names": self.channel_names,
             "sampling_rate": effective_fs,
         }
 
@@ -132,7 +149,7 @@ class SleepDataGenerator:
         # Warn about memory usage for large datasets
         samples_per_subject = int(self.duration_hours * 3600 * self.sampling_rate
                                   / self.downsample_factor)
-        est_bytes = self.n_subjects * N_CHANNELS * samples_per_subject * 4  # float32
+        est_bytes = self.n_subjects * self.n_channels * samples_per_subject * 4  # float32
         est_gb = est_bytes / (1024 ** 3)
         if est_gb > 1.0:
             warnings.warn(
@@ -152,7 +169,7 @@ class SleepDataGenerator:
             "fc_matrices": fc_matrices,
             "hypnograms": np.stack(hypnograms),
             "psg_data": psg_list,
-            "channel_names": CHANNEL_NAMES,
+            "channel_names": self.channel_names,
             "sampling_rate": self.sampling_rate // self.downsample_factor,
             "epoch_sec": self.epoch_sec,
             "metadata": {
@@ -164,6 +181,52 @@ class SleepDataGenerator:
                 "condition": self.condition,
             },
         }
+
+    def save_to_disk(self, output_dir, fmt: str = "npz",
+                     compress: bool = True) -> Dict:
+        """Generate and save the full dataset to disk.
+
+        Writes a directory structure containing:
+            output_dir/
+            ├── metadata.json
+            ├── traits.csv
+            └── subjects/
+                ├── subject_0000.npz (or .edf)
+                ├── subject_0000_hypnogram.csv
+                └── ...
+
+        Uses memory-efficient iteration: only one subject is held in memory
+        at a time.
+
+        Args:
+            output_dir: Directory path to write files into.
+            fmt: Per-subject PSG format ("npz" or "edf").
+                 EDF requires `pyedflib` (pip install pyedflib).
+            compress: Use compressed NPZ (ignored for EDF).
+
+        Returns:
+            Dict with summary info ({"n_subjects_saved", "output_dir"}).
+        """
+        from .io import save_dataset
+
+        meta = {
+            "n_subjects": self.n_subjects,
+            "sampling_rate": self.sampling_rate // self.downsample_factor,
+            "duration_hours": self.duration_hours,
+            "epoch_sec": self.epoch_sec,
+            "n_roi": self.n_roi,
+            "seed": self.seed,
+            "downsample_factor": self.downsample_factor,
+            "condition": self.condition,
+        }
+        return save_dataset(
+            self.generate_subject_iter(),
+            output_dir=output_dir,
+            metadata=meta,
+            fmt=fmt,
+            epoch_sec=self.epoch_sec,
+            compress=compress,
+        )
 
     def generate_epoch_batch(self, subject_indices: List[int],
                              epoch_indices: List[int]) -> Dict:
@@ -184,7 +247,7 @@ class SleepDataGenerator:
         n_sub = len(subject_indices)
         n_ep = len(epoch_indices)
 
-        psg_epochs = np.zeros((n_sub, n_ep, N_CHANNELS, epoch_samples), dtype=np.float32)
+        psg_epochs = np.zeros((n_sub, n_ep, self.n_channels, epoch_samples), dtype=np.float32)
         stages = np.zeros((n_sub, n_ep), dtype=np.int8)
         fc_matrices = np.zeros((n_sub, self.n_roi, self.n_roi), dtype=np.float32)
 
@@ -206,7 +269,8 @@ class SleepDataGenerator:
             # Generate only requested epochs
             channel_gen = PSGChannelGenerator(
                 traits, sampling_rate=self.sampling_rate,
-                epoch_sec=self.epoch_sec, rng=rng_signal
+                epoch_sec=self.epoch_sec, rng=rng_signal,
+                eeg_channels=self.eeg_channels,
             )
 
             for ei, ep_idx in enumerate(epoch_indices):

@@ -14,5 +14,6 @@ setup(
     ],
     extras_require={
         "viz": ["matplotlib>=3.4"],
+        "edf": ["pyedflib>=0.1.30"],
     },
 )

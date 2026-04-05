@@ -265,7 +265,73 @@ examples/
 | **OSA** | 40-44% | 10-15% | 34-35% | 0-2% | 8-14% |
 | **Insomnia** | 27-30% | 7-12% | 38-42% | 7-10% | 13-14% |
 
-## PSG信号チャンネル（8チャンネル）
+## EEGチャンネル構成（設定可能）
+
+EEGチャンネルは国際10-20法の標準位置から自由に選択できます。デフォルトは
+`["C3", "C4"]` の2チャンネルで、非EEGチャンネル（EOG×2, EMG, ECG, 呼吸, SpO2）
+と合わせて計8チャンネルとなります。
+
+### 使用例
+
+```python
+from sleepsim import SleepDataGenerator
+
+# デフォルト（2ch EEG + 6ch 非EEG = 計8ch）
+gen = SleepDataGenerator(n_subjects=10)
+
+# 臨床標準の6ch EEG構成
+gen = SleepDataGenerator(
+    n_subjects=10,
+    eeg_channels=["F3", "F4", "C3", "C4", "O1", "O2"],
+)  # 計12チャンネル
+
+# フル10-20法（19ch EEG）
+full_1020 = ["Fp1","Fp2","F3","F4","F7","F8","Fz",
+             "C3","C4","Cz","T3","T4","T5","T6",
+             "P3","P4","Pz","O1","O2"]
+gen = SleepDataGenerator(n_subjects=10, eeg_channels=full_1020)  # 計25チャンネル
+
+# 単一チャンネル（Cz のみ）
+gen = SleepDataGenerator(n_subjects=10, eeg_channels=["Cz"])
+```
+
+### 利用可能なEEGチャンネル
+
+| 領域 | チャンネル名 |
+|---|---|
+| 前頭極 | `Fp1`, `Fp2` |
+| 前頭 | `F3`, `F4`, `F7`, `F8`, `Fz` |
+| 中心 | `C3`, `C4`, `Cz` |
+| 側頭 | `T3`, `T4`, `T5`, `T6` |
+| 頭頂 | `P3`, `P4`, `Pz` |
+| 後頭 | `O1`, `O2`, `Oz` |
+| 耳介/乳様突起 | `A1`, `A2`, `M1`, `M2` |
+
+### トポグラフィによる信号特性の変調
+
+各チャンネルは**生理学的に妥当な空間分布**で信号が生成されます（`EEG_TOPOGRAPHY`）:
+
+| 帯域 | 空間分布の特徴 |
+|---|---|
+| **δ波（0.5-4 Hz）** | 前頭部で最大（Fz, F3/F4）、後頭部で最小 |
+| **α波（8-12 Hz）** | 後頭部で最大（O1/O2, 1.5×）、前頭部で最小（Fp1/2, 0.3×） |
+| **紡錘波** | 中心部（C3/C4, Cz）で最大、末梢で減弱 |
+| **β波（16-30 Hz）** | 前頭側頭で優位（F7/F8） |
+
+さらに、チャンネル間には**空間的距離に応じた相関構造**が導入されます
+（近接チャンネルほど高相関）。
+
+### カスタマイズ
+
+```python
+from sleepsim.channels import EEG_TOPOGRAPHY, AVAILABLE_EEG_CHANNELS
+
+print("Available channels:", AVAILABLE_EEG_CHANNELS)
+print("O1 topography:", EEG_TOPOGRAPHY["O1"])
+# {'delta': 0.7, 'theta': 0.9, 'alpha': 1.5, 'spindle': 0.45, 'beta': 0.75}
+```
+
+## PSG信号チャンネル（デフォルト8チャンネル）
 
 | チャンネル | 生成方法 |
 |---|---|
@@ -290,6 +356,82 @@ examples/
 - FC行列は12次元多様体上にあり（12特性 → rank-12の構造）
 - 特性の小さな変化 → FC行列の小さな変化（滑らかな写像）
 - HyperNetはこの12次元構造を学習して特性を復元可能
+
+## データの保存と読み込み
+
+生成した合成データをディスクに保存するためのIO関数が用意されています。
+
+### 一括保存（推奨）
+
+```python
+from sleepsim import SleepDataGenerator
+
+gen = SleepDataGenerator(n_subjects=10, condition="healthy", seed=42)
+
+# NPZ形式で保存（デフォルト）
+gen.save_to_disk("output/healthy_dataset", fmt="npz")
+
+# EDF形式で保存（pyedflib必要: pip install pyedflib）
+gen.save_to_disk("output/healthy_dataset_edf", fmt="edf")
+```
+
+出力されるディレクトリ構造:
+
+```
+output/healthy_dataset/
+├── metadata.json                      # データセット全体のメタデータ
+├── traits.csv                         # 全被験者の特性パラメータ一覧
+└── subjects/
+    ├── subject_0000.npz               # PSG+FC+hypnogram+traits（NPZ）
+    ├── subject_0000_hypnogram.csv     # イベント形式のヒプノグラム
+    ├── subject_0001.npz
+    ├── subject_0001_hypnogram.csv
+    └── ...
+```
+
+### 個別のIO関数
+
+```python
+from sleepsim import (
+    save_subject_npz, load_subject_npz,
+    save_hypnogram_csv, save_traits_csv,
+)
+
+# 1被験者だけ保存
+for data in gen.generate_subject_iter():
+    save_subject_npz(data, f"subject_{data['traits'].subject_id:03d}.npz")
+    save_hypnogram_csv(data["hypnogram"], f"hypnogram_{data['traits'].subject_id:03d}.csv")
+
+# 読み込み
+loaded = load_subject_npz("subject_000.npz")
+# loaded["psg_data"], loaded["hypnogram"], loaded["fc_matrix"], loaded["traits"]
+
+# 特性テーブルのみCSV保存
+save_traits_csv(gen.subjects, "traits.csv")
+```
+
+### NPZ ファイルの内容
+
+| キー | 形状 | 型 | 説明 |
+|---|---|---|---|
+| `psg_data` | (n_channels, n_samples) | float32 | PSG時系列 |
+| `hypnogram` | (n_epochs,) | int8 | 睡眠ステージラベル |
+| `fc_matrix` | (n_roi, n_roi) | float32 | FC行列 |
+| `trait_vector` | (12,) | float64 | 個人特性パラメータ |
+| `channel_names` | (n_channels,) | str | チャンネル名 |
+| `sampling_rate` | scalar | int | サンプリングレート |
+
+### EDF 形式
+
+EDF（European Data Format）はPSG研究の標準形式です。EDGE Browser、EDFbrowser、MNE-Pythonなど各種ツールで開けます。
+
+- `pyedflib` が必要: `pip install pyedflib`
+- ヒプノグラムはEDFアノテーションとして各ステージ遷移に埋め込まれます
+- SpO2は保存時に%スケール（0-100）に自動変換されます
+
+```bash
+python examples/export_data.py   # 全フォーマットのデモを実行
+```
 
 ## 検証可視化
 
