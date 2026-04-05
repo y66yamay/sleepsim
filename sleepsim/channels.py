@@ -5,7 +5,7 @@ spectral and temporal properties change according to sleep stage and
 individual trait parameters.
 """
 
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 
@@ -15,23 +15,168 @@ from .conditions import get_signal_modifiers
 from .utils import bandpass_filter, pink_noise, normalize_rms, crossfade
 
 
-CHANNEL_NAMES = ["EEG_C3", "EEG_C4", "EOG_L", "EOG_R", "EMG_chin", "ECG",
-                 "Resp_effort", "SpO2"]
+# Non-EEG channels (fixed across all configurations)
+NON_EEG_CHANNELS = ["EOG_L", "EOG_R", "EMG_chin", "ECG", "Resp_effort", "SpO2"]
+
+# Default EEG configuration (backward compatible)
+DEFAULT_EEG_CHANNELS = ["C3", "C4"]
+
+# Full 8-channel list (for backward compatibility with code referencing
+# CHANNEL_NAMES and N_CHANNELS as module-level constants)
+CHANNEL_NAMES = ["EEG_C3", "EEG_C4"] + NON_EEG_CHANNELS
 N_CHANNELS = len(CHANNEL_NAMES)
 
 
+# ============================================================
+# 10-20 system topographical characteristics
+# ============================================================
+# Per-channel band-amplitude modulators relative to C3/C4 baseline.
+# Based on known spatial distributions:
+#   - Delta:    strongest frontally, weakest occipitally
+#   - Alpha:    strongest occipitally, weakest frontally
+#   - Spindle:  strongest at central, weaker at periphery
+#   - Beta:     broadly distributed, slightly stronger frontally
+#   - Theta:    relatively uniform
+EEG_TOPOGRAPHY = {
+    # Prefrontal
+    "Fp1": {"delta": 1.10, "theta": 1.00, "alpha": 0.30, "spindle": 0.35, "beta": 1.05},
+    "Fp2": {"delta": 1.10, "theta": 1.00, "alpha": 0.30, "spindle": 0.35, "beta": 1.05},
+    # Frontal
+    "F3":  {"delta": 1.20, "theta": 1.05, "alpha": 0.45, "spindle": 0.55, "beta": 1.05},
+    "F4":  {"delta": 1.20, "theta": 1.05, "alpha": 0.45, "spindle": 0.55, "beta": 1.05},
+    "F7":  {"delta": 1.05, "theta": 1.00, "alpha": 0.35, "spindle": 0.40, "beta": 1.10},
+    "F8":  {"delta": 1.05, "theta": 1.00, "alpha": 0.35, "spindle": 0.40, "beta": 1.10},
+    "Fz":  {"delta": 1.25, "theta": 1.05, "alpha": 0.45, "spindle": 0.70, "beta": 1.05},
+    # Central (reference)
+    "C3":  {"delta": 1.00, "theta": 1.00, "alpha": 0.80, "spindle": 1.00, "beta": 1.00},
+    "C4":  {"delta": 1.00, "theta": 1.00, "alpha": 0.80, "spindle": 1.00, "beta": 1.00},
+    "Cz":  {"delta": 1.05, "theta": 1.00, "alpha": 0.80, "spindle": 1.10, "beta": 1.00},
+    # Temporal
+    "T3":  {"delta": 0.85, "theta": 0.95, "alpha": 0.60, "spindle": 0.60, "beta": 0.85},
+    "T4":  {"delta": 0.85, "theta": 0.95, "alpha": 0.60, "spindle": 0.60, "beta": 0.85},
+    "T5":  {"delta": 0.80, "theta": 0.95, "alpha": 0.95, "spindle": 0.55, "beta": 0.80},
+    "T6":  {"delta": 0.80, "theta": 0.95, "alpha": 0.95, "spindle": 0.55, "beta": 0.80},
+    # Parietal
+    "P3":  {"delta": 0.90, "theta": 0.95, "alpha": 1.05, "spindle": 0.90, "beta": 0.90},
+    "P4":  {"delta": 0.90, "theta": 0.95, "alpha": 1.05, "spindle": 0.90, "beta": 0.90},
+    "Pz":  {"delta": 0.95, "theta": 0.95, "alpha": 1.05, "spindle": 0.95, "beta": 0.90},
+    # Occipital
+    "O1":  {"delta": 0.70, "theta": 0.90, "alpha": 1.50, "spindle": 0.45, "beta": 0.75},
+    "O2":  {"delta": 0.70, "theta": 0.90, "alpha": 1.50, "spindle": 0.45, "beta": 0.75},
+    "Oz":  {"delta": 0.70, "theta": 0.90, "alpha": 1.55, "spindle": 0.45, "beta": 0.75},
+    # Auricular / mastoid (used as reference, minimal brain activity)
+    "A1":  {"delta": 0.30, "theta": 0.30, "alpha": 0.30, "spindle": 0.20, "beta": 0.40},
+    "A2":  {"delta": 0.30, "theta": 0.30, "alpha": 0.30, "spindle": 0.20, "beta": 0.40},
+    "M1":  {"delta": 0.30, "theta": 0.30, "alpha": 0.30, "spindle": 0.20, "beta": 0.40},
+    "M2":  {"delta": 0.30, "theta": 0.30, "alpha": 0.30, "spindle": 0.20, "beta": 0.40},
+}
+
+# Approximate 2D positions (head-space, x=right-left, y=anterior-posterior)
+# used to compute inter-channel spatial correlation.
+EEG_POSITIONS = {
+    "Fp1": (-0.3, 0.9), "Fp2": (0.3, 0.9),
+    "F3":  (-0.5, 0.6), "F4":  (0.5, 0.6),
+    "F7":  (-0.8, 0.5), "F8":  (0.8, 0.5),
+    "Fz":  (0.0, 0.6),
+    "C3":  (-0.5, 0.0), "C4":  (0.5, 0.0),
+    "Cz":  (0.0, 0.0),
+    "T3":  (-1.0, 0.0), "T4":  (1.0, 0.0),
+    "T5":  (-0.9, -0.5), "T6":  (0.9, -0.5),
+    "P3":  (-0.5, -0.6), "P4":  (0.5, -0.6),
+    "Pz":  (0.0, -0.6),
+    "O1":  (-0.3, -0.9), "O2":  (0.3, -0.9),
+    "Oz":  (0.0, -0.95),
+    "A1":  (-1.1, 0.0), "A2":  (1.1, 0.0),
+    "M1":  (-1.0, -0.2), "M2":  (1.0, -0.2),
+}
+
+AVAILABLE_EEG_CHANNELS = tuple(EEG_TOPOGRAPHY.keys())
+
+
+def validate_eeg_channels(eeg_channels: List[str]) -> List[str]:
+    """Validate and canonicalize an EEG channel name list.
+
+    Args:
+        eeg_channels: List of channel names (case-insensitive).
+
+    Returns:
+        Canonical channel names in the provided order.
+
+    Raises:
+        ValueError: If an unrecognized channel name is provided.
+    """
+    if not eeg_channels:
+        raise ValueError("eeg_channels must contain at least one channel")
+    canonical = []
+    # Build a case-insensitive lookup (the canonical keys are Title-case)
+    lookup = {k.lower(): k for k in EEG_TOPOGRAPHY.keys()}
+    for ch in eeg_channels:
+        key = ch.lower().strip()
+        if key not in lookup:
+            raise ValueError(
+                f"Unknown EEG channel '{ch}'. Available channels: "
+                f"{sorted(EEG_TOPOGRAPHY.keys())}"
+            )
+        canonical.append(lookup[key])
+    return canonical
+
+
+def build_channel_names(eeg_channels: List[str]) -> List[str]:
+    """Build the full channel name list (EEG + fixed non-EEG)."""
+    return [f"EEG_{ch}" for ch in eeg_channels] + list(NON_EEG_CHANNELS)
+
+
 class PSGChannelGenerator:
-    """Generate multi-channel PSG signals for a single subject."""
+    """Generate multi-channel PSG signals for a single subject.
+
+    The non-EEG channels (EOG, EMG, ECG, Resp, SpO2) are fixed, but the
+    set of EEG channels is configurable via the ``eeg_channels`` parameter.
+    Supported channel names are any key in ``EEG_TOPOGRAPHY`` (standard
+    10-20 positions: Fp1/2, F3/4/7/8/z, C3/4/z, T3/4/5/6, P3/4/z, O1/2/z,
+    A1/2, M1/2).
+    """
 
     def __init__(self, traits: SubjectTraits, sampling_rate: int = 256,
                  epoch_sec: float = 30.0,
-                 rng: Optional[np.random.Generator] = None):
+                 rng: Optional[np.random.Generator] = None,
+                 eeg_channels: Optional[List[str]] = None):
         self.traits = traits
         self.fs = sampling_rate
         self.epoch_sec = epoch_sec
         self.epoch_samples = int(sampling_rate * epoch_sec)
         self.rng = rng or np.random.default_rng(traits.subject_id + 1000)
         self.signal_mods = get_signal_modifiers(traits.condition)
+
+        if eeg_channels is None:
+            eeg_channels = list(DEFAULT_EEG_CHANNELS)
+        self.eeg_channels = validate_eeg_channels(eeg_channels)
+        self.channel_names = build_channel_names(self.eeg_channels)
+        self.n_channels = len(self.channel_names)
+        self._spatial_mix = self._compute_spatial_mixing_matrix()
+
+    def _compute_spatial_mixing_matrix(self) -> np.ndarray:
+        """Compute a mixing matrix that introduces spatial correlation
+        between nearby EEG channels.
+
+        Each output channel is a weighted mix of all channel-specific
+        sources, with weights decaying with inter-channel distance.
+        """
+        n_eeg = len(self.eeg_channels)
+        M = np.eye(n_eeg)
+        positions = [EEG_POSITIONS.get(ch, (0.0, 0.0))
+                     for ch in self.eeg_channels]
+        decay = 0.6  # smaller -> more local, larger -> more global mixing
+        for i in range(n_eeg):
+            for j in range(n_eeg):
+                if i == j:
+                    continue
+                d = float(np.hypot(positions[i][0] - positions[j][0],
+                                   positions[i][1] - positions[j][1]))
+                M[i, j] = np.exp(-d / decay) * 0.3
+        # Normalize rows to unit sum of squared weights so that output
+        # amplitude is comparable to input.
+        M = M / np.sqrt((M ** 2).sum(axis=1, keepdims=True))
+        return M
 
     def generate_epoch(self, stage: int, epoch_index: int = 0) -> np.ndarray:
         """Generate one epoch of all PSG channels.
@@ -43,25 +188,33 @@ class PSGChannelGenerator:
         Returns:
             np.ndarray of shape (n_channels, epoch_samples).
         """
-        eeg_c3 = self._generate_eeg(stage)
-        # C4: correlated but not identical to C3
-        eeg_c4 = 0.85 * eeg_c3 + 0.15 * self._generate_eeg(stage)
+        # Generate per-channel EEG sources with topographical weights
+        n_eeg = len(self.eeg_channels)
+        eeg_sources = np.zeros((n_eeg, self.epoch_samples), dtype=np.float64)
+        for i, ch in enumerate(self.eeg_channels):
+            eeg_sources[i] = self._generate_eeg(stage, topography=EEG_TOPOGRAPHY[ch])
+        # Apply spatial mixing to create physiologically plausible correlations
+        eeg_channels_data = self._spatial_mix @ eeg_sources
 
         eog_l, eog_r = self._generate_eog(stage)
         emg = self._generate_emg(stage)
         ecg = self._generate_ecg(stage)
         resp, spo2 = self._generate_respiratory(stage)
 
-        # Apply condition-specific post-processing
+        # Apply condition-specific post-processing to all EEG channels
         if self.signal_mods.get("arousal_eeg_burst") and stage != W:
-            eeg_c3, eeg_c4 = self._apply_arousal_bursts(eeg_c3, eeg_c4, stage)
-
+            eeg_channels_data = self._apply_arousal_bursts_multichannel(
+                eeg_channels_data, stage)
         if self.signal_mods.get("alpha_intrusion_nrem") and stage in (N2, N3):
-            eeg_c3 = self._apply_alpha_intrusion(eeg_c3)
-            eeg_c4 = self._apply_alpha_intrusion(eeg_c4)
+            for i in range(n_eeg):
+                eeg_channels_data[i] = self._apply_alpha_intrusion(
+                    eeg_channels_data[i])
 
-        return np.stack([eeg_c3, eeg_c4, eog_l, eog_r, emg, ecg, resp, spo2],
-                        axis=0)
+        return np.concatenate(
+            [eeg_channels_data,
+             np.stack([eog_l, eog_r, emg, ecg, resp, spo2], axis=0)],
+            axis=0,
+        )
 
     def generate_all(self, stages: np.ndarray) -> np.ndarray:
         """Generate continuous multi-channel PSG for a full night.
@@ -84,7 +237,7 @@ class PSGChannelGenerator:
 
         # Assemble with crossfade per channel
         result_channels = []
-        for ch in range(N_CHANNELS):
+        for ch in range(self.n_channels):
             segments = [epoch_data[i][ch] for i in range(n_epochs)]
             continuous = segments[0]
             for seg in segments[1:]:
@@ -93,8 +246,8 @@ class PSGChannelGenerator:
 
         # Trim/pad to exact length
         target_len = n_epochs * self.epoch_samples
-        result = np.zeros((N_CHANNELS, target_len), dtype=np.float32)
-        for ch in range(N_CHANNELS):
+        result = np.zeros((self.n_channels, target_len), dtype=np.float32)
+        for ch in range(self.n_channels):
             n = min(len(result_channels[ch]), target_len)
             result[ch, :n] = result_channels[ch][:n]
 
@@ -102,39 +255,52 @@ class PSGChannelGenerator:
 
     # --- EEG Generation ---
 
-    def _generate_eeg(self, stage: int) -> np.ndarray:
-        """Generate one EEG channel for one epoch."""
+    def _generate_eeg(self, stage: int,
+                      topography: Optional[dict] = None) -> np.ndarray:
+        """Generate one EEG channel for one epoch.
+
+        Args:
+            stage: Sleep stage code.
+            topography: Optional per-band multipliers for this channel
+                position (see ``EEG_TOPOGRAPHY``). If None, behaves like
+                a C3/C4-equivalent signal.
+        """
         n = self.epoch_samples
-        t = self.traits
 
         # Base noise
         noise = self.rng.standard_normal(n)
         signal = np.zeros(n, dtype=np.float64)
 
-        # Stage-dependent band amplitudes
+        # Stage-dependent band amplitudes, scaled by topography
         amp = self._eeg_band_amplitudes(stage)
+        topo = topography or {}
+        delta_w = topo.get("delta", 1.0)
+        theta_w = topo.get("theta", 1.0)
+        alpha_w = topo.get("alpha", 1.0)
+        spindle_w = topo.get("spindle", 1.0)
+        beta_w = topo.get("beta", 1.0)
 
         # Delta (0.5-4 Hz)
-        signal += amp["delta"] * bandpass_filter(noise, 0.5, 4.0, self.fs)
+        signal += delta_w * amp["delta"] * bandpass_filter(noise, 0.5, 4.0, self.fs)
 
         # Theta (4-8 Hz)
         noise2 = self.rng.standard_normal(n)
-        signal += amp["theta"] * bandpass_filter(noise2, 4.0, 8.0, self.fs)
+        signal += theta_w * amp["theta"] * bandpass_filter(noise2, 4.0, 8.0, self.fs)
 
         # Alpha (8-12 Hz)
         noise3 = self.rng.standard_normal(n)
-        signal += amp["alpha"] * bandpass_filter(noise3, 8.0, 12.0, self.fs)
+        signal += alpha_w * amp["alpha"] * bandpass_filter(noise3, 8.0, 12.0, self.fs)
 
         # Beta (16-30 Hz)
         noise4 = self.rng.standard_normal(n)
-        signal += amp["beta"] * bandpass_filter(noise4, 16.0, 30.0, self.fs)
+        signal += beta_w * amp["beta"] * bandpass_filter(noise4, 16.0, 30.0, self.fs)
 
         # Add 1/f noise floor
         signal += 0.3 * pink_noise(n, self.rng)
 
         # Stage-specific transients
         if stage == N2:
-            signal = self._add_spindles(signal)
+            signal = self._add_spindles(signal, amplitude_scale=spindle_w)
             signal = self._add_k_complexes(signal)
 
         return signal.astype(np.float64)
@@ -158,7 +324,8 @@ class PSGChannelGenerator:
 
         return a
 
-    def _add_spindles(self, signal: np.ndarray) -> np.ndarray:
+    def _add_spindles(self, signal: np.ndarray,
+                      amplitude_scale: float = 1.0) -> np.ndarray:
         """Overlay sleep spindles onto N2 EEG signal."""
         t = self.traits
         n = len(signal)
@@ -178,7 +345,7 @@ class PSGChannelGenerator:
             t_arr = np.arange(dur_samples) / self.fs
             freq = t.spindle_frequency + self.rng.normal(0, 0.5)
             envelope = np.exp(-0.5 * ((t_arr - dur_sec / 2) / (dur_sec / 4)) ** 2)
-            spindle = 1.5 * envelope * np.sin(2 * np.pi * freq * t_arr)
+            spindle = 1.5 * amplitude_scale * envelope * np.sin(2 * np.pi * freq * t_arr)
 
             signal[pos:pos + dur_samples] += spindle
 
@@ -482,6 +649,32 @@ class PSGChannelGenerator:
         return resp, spo2
 
     # --- Condition-specific EEG post-processing ---
+
+    def _apply_arousal_bursts_multichannel(self, eeg: np.ndarray,
+                                           stage: int) -> np.ndarray:
+        """Add brief high-frequency EEG bursts across all EEG channels."""
+        n_eeg, n = eeg.shape
+        ahi = self.signal_mods.get("apnea_rate_per_hour", 0.0)
+        n_bursts = self.rng.poisson(ahi * self.epoch_sec / 3600.0)
+
+        for _ in range(n_bursts):
+            dur = int(self.rng.uniform(1.0, 3.0) * self.fs)
+            pos = self.rng.integers(0, max(1, n - dur))
+            dur = min(dur, n - pos)
+
+            t_arr = np.arange(dur) / self.fs
+            burst = (1.5 * np.sin(2 * np.pi * 10 * t_arr) +
+                     0.8 * np.sin(2 * np.pi * 20 * t_arr))
+            env = np.exp(-0.5 * ((t_arr - dur / self.fs / 2) /
+                                  (dur / self.fs / 4)) ** 2)
+            burst *= env
+
+            # Apply burst to each channel with small amplitude variation
+            for i in range(n_eeg):
+                scale = 1.0 + 0.1 * self.rng.standard_normal()
+                eeg[i, pos:pos + dur] += burst * scale
+
+        return eeg
 
     def _apply_arousal_bursts(self, eeg_c3: np.ndarray,
                               eeg_c4: np.ndarray,
